@@ -91,10 +91,10 @@ async function run() {
 
       res.send(result);
     });
-    
+
     app.get("/contests", async (req, res) => {
       try {
-        const { type } = req.query; 
+        const { type } = req.query;
         const filter = { approved: true };
 
         if (type && type !== "all") {
@@ -104,7 +104,7 @@ async function run() {
             "Business Ideas": "business-idea",
             "Gaming Reviews": "gaming-review",
           };
-         filter.type = typeMap[type] ;
+          filter.type = typeMap[type];
         }
 
         const contests = await contestCollection
@@ -116,6 +116,22 @@ async function run() {
       } catch (err) {
         console.error(err);
         res.status(500).send({ error: "Failed to fetch contests" });
+      }
+    });
+
+    // GET single contest by id
+    app.get("/contest/:id", async (req, res) => {
+      const id = req.params.id;
+      try {
+        const contest = await contestCollection.findOne({
+          _id: new ObjectId(id),
+        });
+        if (!contest)
+          return res.status(404).send({ message: "Contest not found" });
+        res.send(contest);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ error: "Failed to fetch contest" });
       }
     });
 
