@@ -73,12 +73,50 @@ async function run() {
 
     // GET contests by creator email
     app.get("/contest/creator/:email", async (req, res) => {
-      const { email } = req.params; 
+      const { email } = req.params;
       const result = await contestCollection
         .find({ creatorEmail: email })
         .sort({ createdAt: -1 })
         .toArray();
       res.send(result);
+    });
+
+    // Popular contests show in ui
+    app.get("/contests/popular", async (req, res) => {
+      const result = await contestCollection
+        .find()
+        .sort({ participants: -1 })
+        .limit(6)
+        .toArray();
+
+      res.send(result);
+    });
+    
+    app.get("/contests", async (req, res) => {
+      try {
+        const { type } = req.query; 
+        const filter = { approved: true };
+
+        if (type && type !== "all") {
+          const typeMap = {
+            "Image Design": "image-design",
+            "Article Writing": "article-writing",
+            "Business Ideas": "business-idea",
+            "Gaming Reviews": "gaming-review",
+          };
+         filter.type = typeMap[type] ;
+        }
+
+        const contests = await contestCollection
+          .find(filter)
+          .sort({ createdAt: -1 }) // latest contests first
+          .toArray();
+
+        res.send(contests);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ error: "Failed to fetch contests" });
+      }
     });
 
     app.post("/contest", async (req, res) => {
@@ -90,23 +128,32 @@ async function run() {
       res.send(result);
     });
 
-    app.delete("/contest/:id", async(req, res) => {
+    // Update contest (approve/reject)
+    app.patch("/contest/:id", async (req, res) => {
       const id = req.params.id;
-      const query = { _id: new ObjectId(id) }
+      const updateData = req.body;
+
+      try {
+        const result = await contestCollection.updateOne(
+          { _id: new ObjectId(id) },
+          { $set: updateData }
+        );
+        if (result.matchedCount === 0)
+          return res.status(404).send({ message: "Contest not found" });
+
+        res.send({ message: "Contest updated successfully" });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ error: "Failed to update contest" });
+      }
+    });
+
+    app.delete("/contest/:id", async (req, res) => {
+      const id = req.params.id;
+      const query = { _id: new ObjectId(id) };
       const result = await contestCollection.deleteOne(query);
       res.send(result);
-    })
-
- 
-
-
-
-
- 
-
-  
-
-
+    });
 
     // Send a ping to confirm a successful connection
     await client.db("admin").command({ ping: 1 });
