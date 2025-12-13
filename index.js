@@ -5,6 +5,8 @@ require("dotenv").config();
 
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
 
+const stripe = require("stripe")(process.env.STRIP_SECRET);
+
 const port = process.env.PORT || 3000;
 
 // Middleware
@@ -169,6 +171,81 @@ async function run() {
       const query = { _id: new ObjectId(id) };
       const result = await contestCollection.deleteOne(query);
       res.send(result);
+    });
+
+    // participateCollection
+
+    // participationCollection = db.collection("participations");
+
+    app.get("/participations", async (req, res) => {
+      const { contestId, userEmail } = req.query;
+
+      const existing = await participateCollection.findOne({
+        contestId,
+        userEmail,
+      });
+
+      res.send({ alreadyRegistered: !!existing });
+    });
+
+    app.post("/participations", async (req, res) => {
+      const { contestId, userEmail, registeredAt } = req.body;
+
+      // Check duplicate registration
+      const existing = await participateCollection.findOne({
+        contestId,
+        userEmail,
+      });
+      if (existing) {
+        return res.status(400).send({ message: "Already registered" });
+      }
+
+      // Insert participation
+      const result = await participateCollection.insertOne({
+        contestId,
+        userEmail,
+        registeredAt: registeredAt || new Date(),
+      });
+
+      // Also update participantsCount in contest
+      await contestCollection.updateOne(
+        { _id: new ObjectId(contestId) },
+        { $inc: { participantsCount: 1 } }
+      );
+
+      res.send({ message: "Successfully registered", result });
+    });
+
+    // Payment related api
+    app.post("/create-checkout-session", async (req, res) => {
+      const paymentInfo = req.body;
+      const amount = parseInt(paymentInfo.price) * 100;
+      const session = await stripe.checkout.sessions.create({
+        line_items: [
+          {
+            // Provide the exact Price ID (for example, price_1234) of the product you want to sell
+            price_data: {
+              currency: "USD",
+              unit_amount: amount,
+              product_data: {
+                name: paymentInfo.contestName,
+              },
+            },
+            quantity: 1,
+          },
+        ],
+        customer_email: paymentInfo.userEmail,
+        mode: "payment",
+        metadata: {
+          contestId: paymentInfo.contestId,
+        },
+        success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success`,
+        cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
+      });
+
+      // res.redirect(303, session.url);
+      console.log(session);
+      res.send({ url: session.url });
     });
 
     // Send a ping to confirm a successful connection
