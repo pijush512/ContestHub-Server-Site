@@ -31,6 +31,7 @@ async function run() {
     const contestCollection = db.collection("contest");
     const usersCollection = db.collection("users");
     const participateCollection = db.collection("participations");
+    const submissionsCollection = db.collection("submissions");
 
     // GET all users
     app.get("/users", async (req, res) => {
@@ -173,8 +174,6 @@ async function run() {
       res.send(result);
     });
 
-    // participateCollection
-
     // participationCollection = db.collection("participations");
 
     app.get("/participations", async (req, res) => {
@@ -186,6 +185,38 @@ async function run() {
       });
 
       res.send({ alreadyRegistered: !!existing });
+    });
+
+    // GET participated contests by user email
+    app.get("/contest/participated/:email", async (req, res) => {
+      const { email } = req.params;
+
+      try {
+        // 1️⃣ User er sob participation fetch
+        const participations = await participateCollection
+          .find({ userEmail: email })
+          .toArray();
+
+        // 2️⃣ Contest er info add koro
+        const contests = await Promise.all(
+          participations.map(async (p) => {
+            const contest = await contestCollection.findOne({
+              _id: new ObjectId(p.contestId),
+            });
+            return {
+              ...contest,
+              registeredAt: p.registeredAt,
+            };
+          })
+        );
+
+        res.send(contests);
+      } catch (err) {
+        console.error(err);
+        res
+          .status(500)
+          .send({ message: "Failed to fetch participated contests" });
+      }
     });
 
     app.post("/participations", async (req, res) => {
@@ -239,13 +270,106 @@ async function run() {
         metadata: {
           contestId: paymentInfo.contestId,
         },
-        success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success`,
+        success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
       });
 
       // res.redirect(303, session.url);
       console.log(session);
       res.send({ url: session.url });
+    });
+
+    app.patch("/payment-success", async (req, res) => {
+      try {
+        const sessionId = req.query.session_id;
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+        const contestId = session.metadata.contestId;
+        const userEmail = session.customer_email;
+
+        // 1️⃣ Check duplicate registration first
+        const existing = await participateCollection.findOne({
+          contestId,
+          userEmail,
+        });
+        if (existing) {
+          return res.send({
+            success: false,
+            message: "You have already registered",
+          });
+        }
+
+        // 2️⃣ Check payment status
+        if (session.payment_status !== "paid") {
+          return res.send({
+            success: false,
+            message: "Payment not completed yet",
+          });
+        }
+
+        // 3️⃣ Insert participation
+        await participateCollection.insertOne({
+          contestId,
+          userEmail,
+          registeredAt: new Date(),
+        });
+
+        // 4️⃣ Increment participantsCount in contest
+        await contestCollection.updateOne(
+          { _id: new ObjectId(contestId) },
+          { $inc: { participantsCount: 1 } }
+        );
+
+        res.send({ success: true, message: "Successfully registered" });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ success: false, message: "Server error" });
+      }
+    });
+
+    // submissionsCollection related api
+    app.post("/submissions", async (req, res) => {
+      try {
+        const { contestId, userEmail, taskLink, submittedAt } = req.body;
+
+        // 1️⃣ Check duplicate submission
+        const existing = await submissionsCollection.findOne({
+          contestId,
+          userEmail,
+        });
+        if (existing) {
+          return res.send({
+            success: false,
+            message: "You already submitted this contest",
+          });
+        }
+
+        // 2️⃣ Insert submission
+        const result = await submissionsCollection.insertOne({
+          contestId,
+          userEmail,
+          taskLink,
+          submittedAt: submittedAt || new Date(),
+        });
+
+        res.send({
+          success: true,
+          message: "Task submitted successfully",
+          result,
+        });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ success: false, message: "Server error" });
+      }
+    });
+
+    // Show creator dashbord api
+    app.get("/creator/submissions/:contestId", async (req, res) => {
+      const { contestId } = req.params;
+      const submissions = await submissionsCollection
+        .find({ contestId })
+        .toArray();
+      res.send(submissions);
     });
 
     // Send a ping to confirm a successful connection
