@@ -32,8 +32,9 @@ async function run() {
     const usersCollection = db.collection("users");
     const participateCollection = db.collection("participations");
     const submissionsCollection = db.collection("submissions");
+    const paymentHistoryCollection = db.collection("paymentHistoryCollection");
 
-    participateCollection.createIndex({ transactionId: 1 }, { unique: true });
+    await paymentHistoryCollection.createIndex({ transactionId: 1 }, { unique: true });
 
     // GET all users
     app.get("/users", async (req, res) => {
@@ -245,7 +246,6 @@ async function run() {
       res.send({ message: "Successfully registered", result });
     });
 
-    // Payment related api
     app.post("/create-checkout-session", async (req, res) => {
       const paymentInfo = req.body;
       const amount = parseInt(paymentInfo.price) * 100;
@@ -296,14 +296,20 @@ async function run() {
 
         const trackingId =
           "TRK-" + Math.random().toString(36).substring(2, 10).toUpperCase();
-
-        await participateCollection.insertOne({
-          contestId,
-          userEmail,
-          trackingId,
+        const isAllreadyExist = await paymentHistoryCollection.findOne({
           transactionId,
-          registeredAt: new Date(),
         });
+
+        console.log(isAllreadyExist, transactionId);
+        if (!isAllreadyExist) {
+          await paymentHistoryCollection.insertOne({
+            contestId,
+            userEmail,
+            trackingId,
+            transactionId,
+            registeredAt: new Date(),
+          });
+        }
 
         await contestCollection.updateOne(
           { _id: new ObjectId(contestId) },
@@ -340,66 +346,7 @@ async function run() {
     });
 
     // submissionsCollection related api
-    app.patch("/payment-success", async (req, res) => {
-      try {
-        const sessionId = req.query.session_id;
-        const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-        if (session.payment_status !== "paid") {
-          return res.send({
-            success: false,
-            message: "Payment not completed yet",
-          });
-        }
-
-        const contestId = session.metadata.contestId;
-        const userEmail = session.customer_email;
-        const transactionId = session.payment_intent;
-
-        const trackingId =
-          "TRK-" + Math.random().toString(36).substring(2, 10).toUpperCase();
-
-        await participateCollection.insertOne({
-          contestId,
-          userEmail,
-          trackingId,
-          transactionId,
-          registeredAt: new Date(),
-        });
-
-        await contestCollection.updateOne(
-          { _id: new ObjectId(contestId) },
-          { $inc: { participantsCount: 1 } }
-        );
-
-        res.send({
-          success: true,
-          message: "Payment successful & registered",
-          paymentInfo: {
-            contestId,
-            contestName: session.metadata.contestName,
-            amount: session.amount_total / 100,
-            currency: session.currency,
-            trackingId,
-            transactionId,
-          },
-        });
-      } catch (error) {
-        if (error.code === 11000) {
-          return res.send({
-            success: true,
-            message: "Payment already processed",
-            duplicate: true,
-          });
-        }
-
-        console.error(error);
-        res.status(500).send({
-          success: false,
-          message: "Server error",
-        });
-      }
-    });
 
     app.post("/submissions", async (req, res) => {
       try {
