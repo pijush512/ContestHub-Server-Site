@@ -33,6 +33,8 @@ async function run() {
     const participateCollection = db.collection("participations");
     const submissionsCollection = db.collection("submissions");
 
+    participateCollection.createIndex({ transactionId: 1 }, { unique: true });
+
     // GET all users
     app.get("/users", async (req, res) => {
       try {
@@ -87,8 +89,8 @@ async function run() {
     // Popular contests show in ui
     app.get("/contests/popular", async (req, res) => {
       const result = await contestCollection
-        .find()
-        .sort({ participants: -1 })
+        .find({ status: "approved" })
+        .sort({ participantsCount: -1 })
         .limit(6)
         .toArray();
 
@@ -98,7 +100,7 @@ async function run() {
     app.get("/contests", async (req, res) => {
       try {
         const { type } = req.query;
-        const filter = { approved: true };
+        const filter = { status: "approved" };
 
         if (type && type !== "all") {
           const typeMap = {
@@ -141,6 +143,8 @@ async function run() {
     app.post("/contest", async (req, res) => {
       const contest = {
         ...req.body,
+        status: "pending",
+        participantsCount: 0,
         createdAt: new Date(),
       };
       const result = await contestCollection.insertOne(contest);
@@ -238,12 +242,6 @@ async function run() {
         registeredAt: registeredAt || new Date(),
       });
 
-      // Also update participantsCount in contest
-      await contestCollection.updateOne(
-        { _id: new ObjectId(contestId) },
-        { $inc: { participantsCount: 1 } }
-      );
-
       res.send({ message: "Successfully registered", result });
     });
 
@@ -269,6 +267,7 @@ async function run() {
         mode: "payment",
         metadata: {
           contestId: paymentInfo.contestId,
+          contestName: paymentInfo.contestName,
         },
         success_url: `${process.env.SITE_DOMAIN}/dashboard/payment-success?session_id={CHECKOUT_SESSION_ID}`,
         cancel_url: `${process.env.SITE_DOMAIN}/dashboard/payment-cancelled`,
@@ -279,27 +278,91 @@ async function run() {
       res.send({ url: session.url });
     });
 
+    // app.patch("/payment-success", async (req, res) => {
+    //   try {
+    //     const sessionId = req.query.session_id;
+    //     const session = await stripe.checkout.sessions.retrieve(sessionId);
+
+    //     const contestId = session.metadata.contestId;
+    //     const userEmail = session.customer_email;
+    //     const transactionId = session.payment_intent;
+    //     const query = { transactionId: transactionId };
+
+    //     const paymentExist = await participateCollection.findOne(query);
+    //     if (paymentExist) {
+    //       return res.send({ message: "already exists", transactionId });
+    //     }
+
+    //     // Check duplicate registration
+    //     // const existing = await participateCollection.findOne({
+    //     //   contestId,
+    //     //   userEmail,
+    //     // });
+    //     // if (existing) {
+    //     //   return res.send({
+    //     //     success: false,
+    //     //     message: "You have already registered",
+    //     //     paymentInfo: null,
+    //     //   });
+    //     // }
+
+    //     if (session.payment_status !== "paid") {
+    //       return res.send({
+    //         success: false,
+    //         message: "Payment not completed yet",
+    //         paymentInfo: null,
+    //       });
+    //     }
+
+    //     const trackingId =
+    //       "TRK-" + Math.random().toString(36).substring(2, 10).toUpperCase();
+
+    //     // Insert participation
+    //     await participateCollection.insertOne({
+    //       contestId,
+    //       userEmail,
+    //       trackingId,
+    //       transactionId,
+    //       registeredAt: new Date(),
+    //     });
+
+    //     // Increment participants count
+    //     await contestCollection.updateOne(
+    //       { _id: new ObjectId(contestId) },
+    //       { $inc: { participantsCount: 1 } }
+    //     );
+
+    //     // Payment info
+    //     const paymentInfo = {
+    //       contestId,
+    //       contestName: session.metadata.contestName,
+    //       amount: session.amount_total / 100,
+    //       currency: session.currency,
+    //       trackingId,
+    //       paymentStatus: session.payment_status,
+    //       transactionId: session.payment_intent,
+    //       paidAt: new Date(),
+    //     };
+
+    //     res.send({
+    //       success: true,
+    //       message: "Payment successful & registered",
+    //       paymentInfo,
+    //     });
+    //   } catch (error) {
+    //     console.error(error);
+    //     res
+    //       .status(500)
+    //       .send({ success: false, message: "Server error", paymentInfo: null });
+    //   }
+    // });
+
+    // submissionsCollection related api
     app.patch("/payment-success", async (req, res) => {
       try {
         const sessionId = req.query.session_id;
         const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-        const contestId = session.metadata.contestId;
-        const userEmail = session.customer_email;
-
-        // 1️⃣ Check duplicate registration first
-        const existing = await participateCollection.findOne({
-          contestId,
-          userEmail,
-        });
-        if (existing) {
-          return res.send({
-            success: false,
-            message: "You have already registered",
-          });
-        }
-
-        // 2️⃣ Check payment status
         if (session.payment_status !== "paid") {
           return res.send({
             success: false,
@@ -307,27 +370,55 @@ async function run() {
           });
         }
 
-        // 3️⃣ Insert participation
+        const contestId = session.metadata.contestId;
+        const userEmail = session.customer_email;
+        const transactionId = session.payment_intent;
+
+        const trackingId =
+          "TRK-" + Math.random().toString(36).substring(2, 10).toUpperCase();
+
         await participateCollection.insertOne({
           contestId,
           userEmail,
+          trackingId,
+          transactionId,
           registeredAt: new Date(),
         });
 
-        // 4️⃣ Increment participantsCount in contest
         await contestCollection.updateOne(
           { _id: new ObjectId(contestId) },
           { $inc: { participantsCount: 1 } }
         );
 
-        res.send({ success: true, message: "Successfully registered" });
+        res.send({
+          success: true,
+          message: "Payment successful & registered",
+          paymentInfo: {
+            contestId,
+            contestName: session.metadata.contestName,
+            amount: session.amount_total / 100,
+            currency: session.currency,
+            trackingId,
+            transactionId,
+          },
+        });
       } catch (error) {
+        if (error.code === 11000) {
+          return res.send({
+            success: true,
+            message: "Payment already processed",
+            duplicate: true,
+          });
+        }
+
         console.error(error);
-        res.status(500).send({ success: false, message: "Server error" });
+        res.status(500).send({
+          success: false,
+          message: "Server error",
+        });
       }
     });
 
-    // submissionsCollection related api
     app.post("/submissions", async (req, res) => {
       try {
         const { contestId, userEmail, taskLink, submittedAt } = req.body;
