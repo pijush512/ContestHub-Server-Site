@@ -278,84 +278,66 @@ async function run() {
       res.send({ url: session.url });
     });
 
-    // app.patch("/payment-success", async (req, res) => {
-    //   try {
-    //     const sessionId = req.query.session_id;
-    //     const session = await stripe.checkout.sessions.retrieve(sessionId);
+    app.patch("/payment-success", async (req, res) => {
+      try {
+        const sessionId = req.query.session_id;
+        const session = await stripe.checkout.sessions.retrieve(sessionId);
 
-    //     const contestId = session.metadata.contestId;
-    //     const userEmail = session.customer_email;
-    //     const transactionId = session.payment_intent;
-    //     const query = { transactionId: transactionId };
+        if (session.payment_status !== "paid") {
+          return res.send({
+            success: false,
+            message: "Payment not completed yet",
+          });
+        }
 
-    //     const paymentExist = await participateCollection.findOne(query);
-    //     if (paymentExist) {
-    //       return res.send({ message: "already exists", transactionId });
-    //     }
+        const contestId = session.metadata.contestId;
+        const userEmail = session.customer_email;
+        const transactionId = session.payment_intent;
 
-    //     // Check duplicate registration
-    //     // const existing = await participateCollection.findOne({
-    //     //   contestId,
-    //     //   userEmail,
-    //     // });
-    //     // if (existing) {
-    //     //   return res.send({
-    //     //     success: false,
-    //     //     message: "You have already registered",
-    //     //     paymentInfo: null,
-    //     //   });
-    //     // }
+        const trackingId =
+          "TRK-" + Math.random().toString(36).substring(2, 10).toUpperCase();
 
-    //     if (session.payment_status !== "paid") {
-    //       return res.send({
-    //         success: false,
-    //         message: "Payment not completed yet",
-    //         paymentInfo: null,
-    //       });
-    //     }
+        await participateCollection.insertOne({
+          contestId,
+          userEmail,
+          trackingId,
+          transactionId,
+          registeredAt: new Date(),
+        });
 
-    //     const trackingId =
-    //       "TRK-" + Math.random().toString(36).substring(2, 10).toUpperCase();
+        await contestCollection.updateOne(
+          { _id: new ObjectId(contestId) },
+          { $inc: { participantsCount: 1 } }
+        );
 
-    //     // Insert participation
-    //     await participateCollection.insertOne({
-    //       contestId,
-    //       userEmail,
-    //       trackingId,
-    //       transactionId,
-    //       registeredAt: new Date(),
-    //     });
+        res.send({
+          success: true,
+          message: "Payment successful & registered",
+          paymentInfo: {
+            contestId,
+            contestName: session.metadata.contestName,
+            amount: session.amount_total / 100,
+            currency: session.currency,
+            trackingId,
+            transactionId,
+          },
+        });
+      } catch (error) {
+        if (error.code === 11000) {
+          return res.send({
+            success: true,
+            message: "Payment already processed",
+            duplicate: true,
+          });
+        }
 
-    //     // Increment participants count
-    //     await contestCollection.updateOne(
-    //       { _id: new ObjectId(contestId) },
-    //       { $inc: { participantsCount: 1 } }
-    //     );
-
-    //     // Payment info
-    //     const paymentInfo = {
-    //       contestId,
-    //       contestName: session.metadata.contestName,
-    //       amount: session.amount_total / 100,
-    //       currency: session.currency,
-    //       trackingId,
-    //       paymentStatus: session.payment_status,
-    //       transactionId: session.payment_intent,
-    //       paidAt: new Date(),
-    //     };
-
-    //     res.send({
-    //       success: true,
-    //       message: "Payment successful & registered",
-    //       paymentInfo,
-    //     });
-    //   } catch (error) {
-    //     console.error(error);
-    //     res
-    //       .status(500)
-    //       .send({ success: false, message: "Server error", paymentInfo: null });
-    //   }
-    // });
+        console.error(error);
+        res.status(500).send({
+          success: false,
+          message: "Server error",
+        });
+      }
+    });
 
     // submissionsCollection related api
     app.patch("/payment-success", async (req, res) => {
