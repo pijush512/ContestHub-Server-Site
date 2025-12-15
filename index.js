@@ -34,8 +34,37 @@ async function run() {
     const submissionsCollection = db.collection("submissions");
     const paymentHistoryCollection = db.collection("paymentHistoryCollection");
 
-    await paymentHistoryCollection.createIndex({ transactionId: 1 }, { unique: true });
+    const duplicates = await paymentHistoryCollection
+      .aggregate([
+        { $group: { _id: "$transactionId", count: { $sum: 1 } } },
+        { $match: { count: { $gt: 1 } } },
+      ])
+      .toArray();
 
+    console.log(duplicates);
+
+    await paymentHistoryCollection
+      .aggregate([
+        {
+          $group: {
+            _id: "$transactionId",
+            ids: { $push: "$_id" },
+            count: { $sum: 1 },
+          },
+        },
+        { $match: { count: { $gt: 1 } } },
+      ])
+      .forEach(async (doc) => {
+        // Keep the first document, delete the rest
+        doc.ids.shift(); // remove first
+        await paymentHistoryCollection.deleteMany({ _id: { $in: doc.ids } });
+      });
+
+    await paymentHistoryCollection.createIndex(
+      { transactionId: 1 },
+      { unique: true }
+    );
+    console.log("Unique index created for transactionId");
     // GET all users
     app.get("/users", async (req, res) => {
       try {
@@ -225,25 +254,88 @@ async function run() {
     });
 
     app.post("/participations", async (req, res) => {
-      const { contestId, userEmail, registeredAt } = req.body;
+      try {
+        const { contestId, userEmail, registeredAt } = req.body;
 
-      // Check duplicate registration
-      const existing = await participateCollection.findOne({
-        contestId,
-        userEmail,
-      });
-      if (existing) {
-        return res.status(400).send({ message: "Already registered" });
+        // 1️⃣ Payload validation
+        if (!contestId || !userEmail) {
+          console.log("Missing contestId or userEmail:", req.body);
+          return res
+            .status(400)
+            .send({ message: "contestId & userEmail are required" });
+        }
+
+        // 2️⃣ Duplicate check
+        const existing = await participateCollection.findOne({
+          contestId,
+          userEmail,
+        });
+        if (existing) {
+          console.log("Already registered:", { contestId, userEmail });
+          return res.status(400).send({ message: "Already registered" });
+        }
+
+        // 3️⃣ Insert participation
+        const participationData = {
+          contestId,
+          userEmail,
+          registeredAt: registeredAt || new Date(),
+        };
+
+        const result = await participateCollection.insertOne(participationData);
+        console.log("Participation Insert Result:", result);
+
+        // 4️⃣ Send response
+        res.send({
+          success: true,
+          message: "Successfully registered",
+          insertedId: result.insertedId,
+        });
+      } catch (err) {
+        console.error("Participations insert error:", err);
+        res.status(500).send({ success: false, message: "Server error" });
       }
+    });
 
-      // Insert participation
-      const result = await participateCollection.insertOne({
-        contestId,
-        userEmail,
-        registeredAt: registeredAt || new Date(),
-      });
+    // app.post("/participations", async (req, res) => {
+    //   const { contestId, userEmail, registeredAt } = req.body;
 
-      res.send({ message: "Successfully registered", result });
+    //   if (!contestId || !userEmail) {
+    //     return res
+    //       .status(400)
+    //       .send({ message: "contestId & userEmail required" });
+    //   }
+
+    //   // Check duplicate registration
+    //   const existing = await participateCollection.findOne({
+    //     contestId,
+    //     userEmail,
+    //   });
+    //   if (existing) {
+    //     return res.status(400).send({ message: "Already registered" });
+    //   }
+
+    //   // Insert participation
+    //   const result = await participateCollection.insertOne({
+    //     contestId,
+    //     userEmail,
+    //     registeredAt: registeredAt || new Date(),
+    //   });
+
+    //   res.send({ message: "Successfully registered", result });
+    // });
+
+    // Payment related API
+
+    app.get("/payments", async (req, res) => {
+      const email = req.query.email;
+      const query = {};
+      if (email) {
+        query.userEmail = email;
+      }
+      const cursor = paymentHistoryCollection.find(query);
+      const result = await cursor.toArray();
+      res.send(result);
     });
 
     app.post("/create-checkout-session", async (req, res) => {
@@ -287,6 +379,7 @@ async function run() {
           return res.send({
             success: false,
             message: "Payment not completed yet",
+            status: session.payment_status,
           });
         }
 
@@ -300,14 +393,16 @@ async function run() {
           transactionId,
         });
 
-        console.log(isAllreadyExist, transactionId);
         if (!isAllreadyExist) {
           await paymentHistoryCollection.insertOne({
             contestId,
+            contestName: session.metadata.contestName,
             userEmail,
+            amount: session.amount_total / 100,
+            currency: session.currency,
             trackingId,
             transactionId,
-            registeredAt: new Date(),
+            registeredAt: new Date(session.created * 1000),
           });
         }
 
@@ -346,7 +441,6 @@ async function run() {
     });
 
     // submissionsCollection related api
-
 
     app.post("/submissions", async (req, res) => {
       try {
